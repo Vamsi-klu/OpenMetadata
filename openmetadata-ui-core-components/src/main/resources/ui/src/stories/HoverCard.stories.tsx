@@ -46,6 +46,10 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const DefaultOpen: Story = {
+  args: { defaultOpen: true },
+};
+
 export const TopPlacement: Story = {
   args: { placement: 'top', openDelay: 0 },
 };

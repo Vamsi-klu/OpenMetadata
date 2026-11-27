@@ -14,12 +14,14 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HoverCard } from './hover-card';
 
-const renderCard = (props: Partial<Parameters<typeof HoverCard>[0]> = {}) =>
-  render(
-    <HoverCard content={<a href="/profile">Profile</a>} {...props}>
-      <a href="/user">Jane</a>
-    </HoverCard>
-  );
+const card = (props: Partial<Parameters<typeof HoverCard>[0]> = {}) => (
+  <HoverCard content={<a href="/profile">Profile</a>} {...props}>
+    <a href="/user">Jane</a>
+  </HoverCard>
+);
+
+const renderCard = (props?: Partial<Parameters<typeof HoverCard>[0]>) =>
+  render(card(props));
 
 const advance = (ms: number) => act(() => vi.advanceTimersByTime(ms));
 
@@ -32,6 +34,98 @@ describe('HoverCard', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('opens immediately when defaultOpen is set and does not report the initial state', () => {
+    const onOpenChange = vi.fn();
+    renderCard({ defaultOpen: true, onOpenChange });
+
+    expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps an initially open card hidden while disabled', () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = renderCard({
+      defaultOpen: true,
+      isDisabled: true,
+      onOpenChange,
+    });
+
+    expect(screen.queryByText('Profile')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    rerender(card({ defaultOpen: true, onOpenChange }));
+
+    expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('closes an initially open card on Escape and reports the dismissal', () => {
+    const onOpenChange = vi.fn();
+    renderCard({ defaultOpen: true, onOpenChange });
+
+    expect(screen.getByText('Profile')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByText('Profile')).not.toBeInTheDocument();
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('cancels a pending hover timer when Escape dismisses the card from within', () => {
+    const onOpenChange = vi.fn();
+    renderCard({ defaultOpen: true, onOpenChange });
+    const profile = screen.getByText('Profile');
+
+    fireEvent.mouseEnter(profile.parentElement as HTMLElement, {
+      pointerType: 'mouse',
+    });
+    fireEvent.keyDown(profile, { key: 'Escape' });
+    advance(300);
+
+    expect(screen.queryByText('Profile')).not.toBeInTheDocument();
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('reports transitions after the hover timers with the latest callback', () => {
+    const onOpenChange = vi.fn();
+    const latestOnOpenChange = vi.fn();
+    const { rerender } = renderCard({ onOpenChange });
+    const trigger = screen.getByText('Jane').parentElement as HTMLElement;
+
+    fireEvent.mouseEnter(trigger, { pointerType: 'mouse' });
+    rerender(card({ onOpenChange: latestOnOpenChange }));
+    advance(300);
+
+    expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(latestOnOpenChange).toHaveBeenNthCalledWith(1, true);
+
+    fireEvent.mouseLeave(trigger, { pointerType: 'mouse' });
+    advance(200);
+
+    expect(screen.queryByText('Profile')).not.toBeInTheDocument();
+    expect(latestOnOpenChange).toHaveBeenNthCalledWith(2, false);
+    expect(latestOnOpenChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports only the close when a hover timer repeats the initial open state', () => {
+    const onOpenChange = vi.fn();
+    renderCard({ defaultOpen: true, onOpenChange });
+    const trigger = screen.getByText('Jane').parentElement as HTMLElement;
+
+    fireEvent.mouseEnter(trigger, { pointerType: 'mouse' });
+    advance(300);
+
+    expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    fireEvent.mouseLeave(trigger, { pointerType: 'mouse' });
+    advance(200);
+
+    expect(screen.queryByText('Profile')).not.toBeInTheDocument();
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it('opens after openDelay on hover and stays open while the pointer is in the card', () => {

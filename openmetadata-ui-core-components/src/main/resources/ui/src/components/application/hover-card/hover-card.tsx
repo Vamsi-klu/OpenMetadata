@@ -28,7 +28,7 @@ import { cx } from '@/utils/cx';
 export interface HoverCardProps {
   /** The trigger element. */
   children: ReactNode;
-  /** Card content shown while the trigger is hovered or keyboard-focused. */
+  /** Content shown while the card is open. */
   content: ReactNode;
   /** @default 'bottom' */
   placement?: Placement;
@@ -36,6 +36,10 @@ export interface HoverCardProps {
   openDelay?: number;
   /** Milliseconds before the card closes, giving the pointer time to move into it. @default 200 */
   closeDelay?: number;
+  /** Whether the card starts open. @default false */
+  defaultOpen?: boolean;
+  /** Called when the internal open state changes after mounting. */
+  onOpenChange?: (isOpen: boolean) => void;
   isDisabled?: boolean;
   /** Distance in px between the trigger and the card. @default 8 */
   offset?: number;
@@ -51,6 +55,8 @@ export const HoverCard = ({
   placement = 'bottom',
   openDelay = 300,
   closeDelay = 200,
+  defaultOpen = false,
+  onOpenChange,
   isDisabled,
   offset = 8,
   arrow = false,
@@ -58,18 +64,34 @@ export const HoverCard = ({
 }: HoverCardProps) => {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>();
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const isOpenRef = useRef(isOpen);
+  const onOpenChangeRef = useRef(onOpenChange);
   const { isFocusVisible } = useFocusVisible();
+
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+
+  const updateOpen = useCallback((open: boolean) => {
+    // A dismissal from inside the popover can precede a pending hover timer.
+    clearTimeout(timer.current);
+    if (isOpenRef.current !== open) {
+      isOpenRef.current = open;
+      setIsOpen(open);
+      onOpenChangeRef.current?.(open);
+    }
+  }, []);
 
   const schedule = useCallback(
     (open: boolean) => {
       clearTimeout(timer.current);
       timer.current = setTimeout(
-        () => setIsOpen(open),
+        () => updateOpen(open),
         open ? openDelay : closeDelay
       );
     },
-    [openDelay, closeDelay]
+    [openDelay, closeDelay, updateOpen]
   );
 
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -77,19 +99,18 @@ export const HoverCard = ({
   // Listen on the document so Escape dismisses a hover-opened card too, where
   // focus is not on the trigger (WCAG 1.4.13: dismissable without moving the pointer).
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || isDisabled) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        clearTimeout(timer.current);
-        setIsOpen(false);
+        updateOpen(false);
       }
     };
     document.addEventListener('keydown', onKeyDown);
 
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
+  }, [isOpen, isDisabled, updateOpen]);
 
   const { hoverProps: triggerHoverProps } = useHover({
     isDisabled,
@@ -136,7 +157,7 @@ export const HoverCard = ({
         offset={offset}
         placement={placement}
         triggerRef={triggerRef}
-        onOpenChange={setIsOpen}>
+        onOpenChange={updateOpen}>
         {arrow && (
           <AriaOverlayArrow>
             <svg
