@@ -44,6 +44,7 @@ import java.io.Reader;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -152,6 +153,8 @@ public abstract class EntityCsv<T extends EntityInterface<?>> {
   public static final String ENTITY_PENDING_APPROVAL = "Pending approval";
   private static final String NAME_PATTERN_VALIDATION_PREFIX = "name must match ";
   private static final String EMAIL_FORMAT_VALIDATION = "email must be a well-formed email address";
+  private static final BigDecimal LONG_MIN = BigDecimal.valueOf(Long.MIN_VALUE);
+  private static final BigDecimal LONG_MAX = BigDecimal.valueOf(Long.MAX_VALUE);
 
   // Additional fields for export/import with multiple entity types
   public static final String FIELD_ENTITY_TYPE = "entityType";
@@ -762,7 +765,9 @@ public abstract class EntityCsv<T extends EntityInterface<?>> {
                 propertyConfig);
         case "timeInterval" -> fieldValue =
             parseTimeInterval(printer, csvRecord, fieldNumber, fieldName, fieldValue);
-        case "number", "integer", "timestamp" -> fieldValue =
+        case "number" -> fieldValue =
+            parseNumberField(csvRecord, fieldNumber, fieldName, customPropertyType, fieldValue);
+        case "integer", "timestamp" -> fieldValue =
             parseLongField(
                 printer, csvRecord, fieldNumber, fieldName, customPropertyType, fieldValue);
         case "table-cp" -> fieldValue =
@@ -884,6 +889,50 @@ public abstract class EntityCsv<T extends EntityInterface<?>> {
       return null;
     }
     return timestampMap;
+  }
+
+  private Object parseNumberField(
+      CSVRecord csvRecord,
+      int fieldNumber,
+      String fieldName,
+      String customPropertyType,
+      Object fieldValue) {
+    String rawValue = fieldValue.toString();
+    Number parsed = null;
+    try {
+      // BigDecimal validates standard decimal syntax so Double.parseDouble cannot accept NaN,
+      // Infinity, hex floats, whitespace, or Java type suffixes like "1.5d".
+      BigDecimal decimal = new BigDecimal(rawValue);
+      parsed = toNumericValue(rawValue, decimal);
+    } catch (NumberFormatException e) {
+      LOG.debug("Failed to parse '{}' as {}: {}", rawValue, customPropertyType, e.getMessage());
+    }
+    if (parsed == null) {
+      deferredFailure(
+          csvRecord,
+          invalidCustomPropertyValue(fieldNumber, fieldName, customPropertyType, rawValue));
+    }
+    return parsed;
+  }
+
+  private static Number toNumericValue(String rawValue, BigDecimal decimal) {
+    Number parsed = null;
+    boolean isIntegerLiteral =
+        rawValue.indexOf('.') < 0 && rawValue.indexOf('e') < 0 && rawValue.indexOf('E') < 0;
+    if (isIntegerLiteral && decimal.compareTo(LONG_MIN) >= 0 && decimal.compareTo(LONG_MAX) <= 0) {
+      long value = decimal.longValueExact();
+      if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE) {
+        parsed = (int) value;
+      } else {
+        parsed = value;
+      }
+    } else {
+      double value = Double.parseDouble(rawValue);
+      if (Double.isFinite(value)) {
+        parsed = value;
+      }
+    }
+    return parsed;
   }
 
   private Object parseLongField(

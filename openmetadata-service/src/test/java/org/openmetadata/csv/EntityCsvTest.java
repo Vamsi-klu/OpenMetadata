@@ -70,6 +70,7 @@ import org.openmetadata.schema.type.csv.CsvErrorType;
 import org.openmetadata.schema.type.csv.CsvFile;
 import org.openmetadata.schema.type.csv.CsvHeader;
 import org.openmetadata.schema.type.csv.CsvImportResult;
+import org.openmetadata.schema.utils.JsonUtils;
 import org.openmetadata.service.Entity;
 import org.openmetadata.service.TypeRegistry;
 import org.openmetadata.service.events.ChangeEvents;
@@ -633,6 +634,87 @@ public class EntityCsvTest {
             "100:bad");
     assertNull(invalidInterval);
     assertFalse(invalidIntervalCsv.isProcessRecord());
+  }
+
+  @Test
+  void test_numberCustomPropertyAcceptsDecimalsAndIntegersThroughJsonSchema() throws IOException {
+    Schema numberSchema = JsonUtils.getJsonSchema("{\"type\":\"number\"}");
+    Schema integerSchema = JsonUtils.getJsonSchema("{\"type\":\"integer\"}");
+    TypeRegistry registry = mock(TypeRegistry.class);
+    Mockito.when(registry.getSchema(Entity.TABLE, "score")).thenReturn(numberSchema);
+    Mockito.when(registry.getSchema(Entity.TABLE, "count")).thenReturn(integerSchema);
+
+    try (MockedStatic<TypeRegistry> typeRegistry = Mockito.mockStatic(TypeRegistry.class)) {
+      typeRegistry.when(TypeRegistry::instance).thenReturn(registry);
+      typeRegistry
+          .when(() -> TypeRegistry.getCustomPropertyType(Entity.TABLE, "score"))
+          .thenReturn("number");
+      typeRegistry
+          .when(() -> TypeRegistry.getCustomPropertyConfig(Entity.TABLE, "score"))
+          .thenReturn(null);
+      typeRegistry
+          .when(() -> TypeRegistry.getCustomPropertyType(Entity.TABLE, "count"))
+          .thenReturn("integer");
+      typeRegistry
+          .when(() -> TypeRegistry.getCustomPropertyConfig(Entity.TABLE, "count"))
+          .thenReturn(null);
+
+      Map<String, Number> expectedByInput = new LinkedHashMap<>();
+      expectedByInput.put("4.5", 4.5);
+      expectedByInput.put("0.1", 0.1);
+      expectedByInput.put("-3.14", -3.14);
+      expectedByInput.put("1.5e2", 150.0);
+      expectedByInput.put("42", 42);
+      expectedByInput.put("0", 0);
+      expectedByInput.put("3000000000", 3000000000L);
+      expectedByInput.put("99999999999999999999", 1.0e20);
+
+      for (Map.Entry<String, Number> entry : expectedByInput.entrySet()) {
+        TestCsv testCsv = new TestCsv();
+        testCsv.enableProcessing();
+        Map<String, Object> extension =
+            testCsv.parseExtension(singleRecord(testCsv, "", "score:" + entry.getKey(), ""), 1);
+        assertTrue(testCsv.isProcessRecord(), "Should accept number value: " + entry.getKey());
+        assertEquals(entry.getValue(), extension.get("score"));
+      }
+
+      // Exported decimal and integral number extensions round-trip back through CSV parsing.
+      for (Number original : List.<Number>of(4.5, 42)) {
+        List<String> exportedRecord = new ArrayList<>();
+        CsvUtil.addExtension(exportedRecord, Map.of("score", original));
+        TestCsv roundTripCsv = new TestCsv();
+        roundTripCsv.enableProcessing();
+        Map<String, Object> roundTripped =
+            roundTripCsv.parseExtension(
+                singleRecord(roundTripCsv, "", exportedRecord.getFirst(), ""), 1);
+        assertTrue(roundTripCsv.isProcessRecord());
+        assertEquals(original, roundTripped.get("score"));
+      }
+
+      // Reject non-JSON numeric strings (NaN, Infinity, Java suffixes, overflow, whitespace).
+      for (String invalidValue :
+          List.of(
+              "abc", "NaN", "Infinity", "-Infinity", "1.5d", "1.5f", "0x1.0p0", "1e400", " 4.5 ")) {
+        TestCsv invalidCsv = new TestCsv();
+        invalidCsv.enableProcessing();
+        invalidCsv.parseExtension(singleRecord(invalidCsv, "", "score:" + invalidValue, ""), 1);
+        assertFalse(invalidCsv.isProcessRecord(), "Should reject invalid number: " + invalidValue);
+      }
+
+      // Integer custom properties still reject decimals while accepting whole numbers.
+      TestCsv decimalForIntegerCsv = new TestCsv();
+      decimalForIntegerCsv.enableProcessing();
+      decimalForIntegerCsv.parseExtension(
+          singleRecord(decimalForIntegerCsv, "", "count:4.5", ""), 1);
+      assertFalse(decimalForIntegerCsv.isProcessRecord());
+
+      TestCsv validIntegerCsv = new TestCsv();
+      validIntegerCsv.enableProcessing();
+      Map<String, Object> intExtension =
+          validIntegerCsv.parseExtension(singleRecord(validIntegerCsv, "", "count:42", ""), 1);
+      assertTrue(validIntegerCsv.isProcessRecord());
+      assertEquals(42L, intExtension.get("count"));
+    }
   }
 
   @Test

@@ -30,6 +30,7 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.openmetadata.it.util.CustomPropertyTestSupport;
 import org.openmetadata.it.util.GovernanceWorkflowActions;
 import org.openmetadata.it.util.SdkClients;
 import org.openmetadata.it.util.TestNamespace;
@@ -1992,5 +1993,144 @@ public class GlossaryResourceIT extends BaseEntityIT<Glossary, CreateGlossary> {
     assertTrue(
         listed.stream().anyMatch(g -> g.getId().equals(seeded.glossary().getId())),
         "Empty domain filter must not 404 and must return glossaries");
+  }
+
+  @Test
+  void test_csvImportDecimalNumberCustomProperty(TestNamespace ns) throws Exception {
+    OpenMetadataClient client = SdkClients.adminClient();
+    String propertyName = ns.prefix("scoreNumber");
+    try {
+      CustomPropertyTestSupport.registerProperty(
+          client, Entity.GLOSSARY_TERM, propertyName, "number");
+      Glossary glossary = createEntity(createMinimalRequest(ns));
+      String decimalTerm = ns.prefix("decimalTerm");
+      String smallDecimalTerm = ns.prefix("smallDecimalTerm");
+      String negativeDecimalTerm = ns.prefix("negativeDecimalTerm");
+      String integerTerm = ns.prefix("integerTerm");
+      String invalidTerm = ns.prefix("invalidTerm");
+
+      String dryRunCsv =
+          GLOSSARY_TERM_CSV_HEADER
+              + String.format(
+                  ",%s,Decimal Term,desc,,,,,,,Approved,,,,%s:4.5\n", decimalTerm, propertyName)
+              + String.format(
+                  ",%s,Small Term,desc,,,,,,,Approved,,,,%s:0.1\n", smallDecimalTerm, propertyName)
+              + String.format(
+                  ",%s,Negative Term,desc,,,,,,,Approved,,,,%s:-2.75\n",
+                  negativeDecimalTerm, propertyName)
+              + String.format(
+                  ",%s,Integer Term,desc,,,,,,,Approved,,,,%s:42\n", integerTerm, propertyName)
+              + String.format(
+                  ",%s,Invalid Term,desc,,,,,,,Approved,,,,%s:notanumber\n",
+                  invalidTerm, propertyName);
+
+      CsvImportResult dryRunResult =
+          JsonUtils.readValue(
+              client.glossaries().importCsv(glossary.getFullyQualifiedName(), dryRunCsv, true),
+              CsvImportResult.class);
+      assertEquals(
+          ApiStatus.PARTIAL_SUCCESS, dryRunResult.getStatus(), dryRunResult.getImportResultsCsv());
+      assertEquals(5, dryRunResult.getNumberOfRowsProcessed());
+      assertEquals(4, dryRunResult.getNumberOfRowsPassed(), dryRunResult.getImportResultsCsv());
+      assertEquals(1, dryRunResult.getNumberOfRowsFailed(), dryRunResult.getImportResultsCsv());
+      assertTrue(dryRunResult.getImportResultsCsv().contains(IMPORT_FAILED));
+
+      String validCsv =
+          GLOSSARY_TERM_CSV_HEADER
+              + String.format(
+                  ",%s,Decimal Term,desc,,,,,,,Approved,,,,%s:4.5\n", decimalTerm, propertyName)
+              + String.format(
+                  ",%s,Small Term,desc,,,,,,,Approved,,,,%s:0.1\n", smallDecimalTerm, propertyName)
+              + String.format(
+                  ",%s,Negative Term,desc,,,,,,,Approved,,,,%s:-2.75\n",
+                  negativeDecimalTerm, propertyName)
+              + String.format(
+                  ",%s,Integer Term,desc,,,,,,,Approved,,,,%s:42\n", integerTerm, propertyName);
+
+      CsvImportResult importResult =
+          JsonUtils.readValue(
+              client.glossaries().importCsv(glossary.getFullyQualifiedName(), validCsv, false),
+              CsvImportResult.class);
+      assertEquals(ApiStatus.SUCCESS, importResult.getStatus(), importResult.getImportResultsCsv());
+      assertEquals(4, importResult.getNumberOfRowsPassed());
+      assertEquals(0, importResult.getNumberOfRowsFailed());
+
+      GlossaryTerm loadedDecimal =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + decimalTerm, "extension");
+      assertEquals(
+          4.5,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      loadedDecimal.getExtension(), propertyName))
+              .doubleValue(),
+          0.0001);
+      GlossaryTerm loadedSmall =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + smallDecimalTerm, "extension");
+      assertEquals(
+          0.1,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      loadedSmall.getExtension(), propertyName))
+              .doubleValue(),
+          0.0001);
+      GlossaryTerm loadedNegative =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + negativeDecimalTerm, "extension");
+      assertEquals(
+          -2.75,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      loadedNegative.getExtension(), propertyName))
+              .doubleValue(),
+          0.0001);
+      GlossaryTerm loadedInteger =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + integerTerm, "extension");
+      assertEquals(
+          42,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      loadedInteger.getExtension(), propertyName))
+              .intValue());
+
+      String exportedCsv = client.glossaries().exportCsv(glossary.getFullyQualifiedName());
+      assertTrue(exportedCsv.contains(propertyName + ":4.5"), exportedCsv);
+      CsvImportResult reimportResult =
+          JsonUtils.readValue(
+              client.glossaries().importCsv(glossary.getFullyQualifiedName(), exportedCsv, false),
+              CsvImportResult.class);
+      assertEquals(
+          ApiStatus.SUCCESS, reimportResult.getStatus(), reimportResult.getImportResultsCsv());
+      assertEquals(0, reimportResult.getNumberOfRowsFailed());
+      GlossaryTerm reloadedDecimal =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + decimalTerm, "extension");
+      assertEquals(
+          4.5,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      reloadedDecimal.getExtension(), propertyName))
+              .doubleValue(),
+          0.0001);
+      GlossaryTerm reloadedInteger =
+          client
+              .glossaryTerms()
+              .getByName(glossary.getFullyQualifiedName() + "." + integerTerm, "extension");
+      assertEquals(
+          42,
+          ((Number)
+                  CustomPropertyTestSupport.extensionValue(
+                      reloadedInteger.getExtension(), propertyName))
+              .intValue());
+    } finally {
+      CustomPropertyTestSupport.removeProperty(client, Entity.GLOSSARY_TERM, propertyName);
+    }
   }
 }
